@@ -30,6 +30,7 @@ import com.android.volley.toolbox.StringRequest
 import com.android.volley.toolbox.Volley
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialog
+import hua.vinh.thang.currencyconverter.model.ConversionRate
 import hua.vinh.thang.currencyconverter.model.SuportedCode
 import org.json.JSONObject
 import java.lang.Double
@@ -59,6 +60,7 @@ class MainActivity : AppCompatActivity() {
     var listCurrencyCode: ArrayList<SuportedCode>? = null
     var adapter: ArrayAdapter<SuportedCode>? = null
     val decimalFormat = DecimalFormat("#,###.########")
+    var rateInfo: ConversionRate? = null
     var rate = 0.0
     private lateinit var networkReceiver: BroadcastReceiver
     private var isFirstCheck = true // flag check first time open app
@@ -167,95 +169,116 @@ class MainActivity : AppCompatActivity() {
         //if network available, get currency from btnAmount and btnConvertTo
         val currency1 = btnAmount!!.text.toString()
         val currency2 = btnConvertTo!!.text.toString()
-        val requestQueue = Volley.newRequestQueue(this@MainActivity)
-        val responeString = Response.Listener<String> { response ->
-            try {
-                //response return an object
-                val jsonObject = JSONObject(response)
+        if(rateInfo == null || rateInfo!!.base_code != currency1) {
+            val requestQueue = Volley.newRequestQueue(this@MainActivity)
+            val responeString = Response.Listener<String> { response ->
+                try {
+                    //response return an object
+                    val jsonObject = JSONObject(response)
 
-                //if result success then continue, else report error
-                val result = jsonObject.getString("result")
-                if (result == "success") {
+                    //if result success then continue, else report error
+                    val result = jsonObject.getString("result")
+                    if (result == "success") {
 
-                    //get object from conversion_rates
-                    val conversion_rates = jsonObject.getJSONObject("conversion_rates")
+                        //get object from conversion_rates
+                        val conversionRatesJson = jsonObject.getJSONObject("conversion_rates")
+                        val conversion_rates = mutableMapOf<String, kotlin.Double>()
+                        val keys = conversionRatesJson.keys()
+                        while (keys.hasNext()) {
+                            val key = keys.next()
+                            val value = conversionRatesJson.getDouble(key)
+                            conversion_rates[key] = value
+                        }
+                        val lastupdate = jsonObject.getString("time_last_update_utc")
+                        val nextupdate = jsonObject.getString("time_next_update_utc")
+                        val basecode = jsonObject.getString("base_code")
+                        rateInfo =
+                            ConversionRate(lastupdate, nextupdate, basecode, conversion_rates)
 
-                    //get rate of currency 2
-                    rate = conversion_rates.getDouble(currency2)
-                    if (isFirstInput) {
-                        edtAmount?.setText("1") //init first value for amount EditText
-                        isFirstInput = false
+                        setValueForOutput(currency1, currency2)
+
+                    } else if (result == "error") {
+                        //when result response "error", display error on the screen
+                        val error = jsonObject.getString("error-type")
+                        Toast.makeText(this, error, Toast.LENGTH_SHORT).show()
                     }
-
-                    //convert currency
-                    val amount = getAmount()
-                    val converted = convertCurrency(amount, rate)
-                    edtConverted?.setText(decimalFormat.format(converted).toString())
-
-                    //string: 1 in currency 1 is how much in currency 2
-                    val compareCurrency =
-                        "1 $currency1 =  ${decimalFormat.format(rate)} $currency2"
-
-                    //string last update and next update
-                    val lastUpdate = "Last update: ${jsonObject.getString("time_last_update_utc")}"
-                    val nextUpdate = "Next update: ${jsonObject.getString("time_next_update_utc")}"
-
-                    //assign values into outputs
-                    tvCompare?.setText(compareCurrency)
-                    tvLastUpdate?.setText(lastUpdate)
-                    tvNextUpdate?.setText(nextUpdate)
-
-                } else if (result == "error") {
-                    //when result response "error", display error on the screen
-                    val error = jsonObject.getString("error-type")
-                    Toast.makeText(this, error, Toast.LENGTH_SHORT).show()
+                } catch (e: Exception) {
                 }
-            } catch (e: Exception) {
             }
+
+
+            //listen error from response and report error
+            val errorListener =
+                Response.ErrorListener { error ->
+                    when (error) {
+                        is com.android.volley.NoConnectionError -> {
+                            Toast.makeText(
+                                this@MainActivity,
+                                "No internet connectivity",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+
+                        is com.android.volley.TimeoutError -> {
+                            Toast.makeText(
+                                this@MainActivity,
+                                "Request timeout, please try again",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+
+                        else -> {
+                            Toast.makeText(
+                                this@MainActivity,
+                                "Error: ${error.message}",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    }
+                }
+
+            // call api ExchangeRatesAPI + (currency 1) using the GET method
+            val builder = Uri.parse(ExchangeRatesAPI + currency1).buildUpon()
+            val url = builder.build().toString()
+            val request = StringRequest(Request.Method.GET, url, responeString, errorListener)
+            request.setRetryPolicy(
+                DefaultRetryPolicy(
+                    DefaultRetryPolicy.DEFAULT_TIMEOUT_MS,
+                    DefaultRetryPolicy.DEFAULT_MAX_RETRIES,
+                    DefaultRetryPolicy.DEFAULT_BACKOFF_MULT
+                )
+            )
+            requestQueue.add(request)
+        }else{
+            setValueForOutput(currency1, currency2)
+        }
+    }
+
+    private fun setValueForOutput(currency1: String, currency2: String){
+        //get rate of currency 2
+        rate = rateInfo!!.conversion_rates.get(currency2)!!
+        if (isFirstInput) {
+            edtAmount?.setText("1") //init first value for amount EditText
+            isFirstInput = false
         }
 
-        //listen error from response and report error
-        val errorListener =
-            Response.ErrorListener { error ->
-                when (error) {
-                    is com.android.volley.NoConnectionError -> {
-                        Toast.makeText(
-                            this@MainActivity,
-                            "No internet connectivity",
-                            Toast.LENGTH_LONG
-                        ).show()
-                    }
+        //convert currency
+        val amount = getAmount()
+        val converted = convertCurrency(amount, rate)
+        edtConverted?.setText(decimalFormat.format(converted).toString())
 
-                    is com.android.volley.TimeoutError -> {
-                        Toast.makeText(
-                            this@MainActivity,
-                            "Request timeout, please try again",
-                            Toast.LENGTH_LONG
-                        ).show()
-                    }
+        //string: 1 in currency 1 is how much in currency 2
+        val compareCurrency =
+            "1 $currency1 =  ${decimalFormat.format(rate)} $currency2"
 
-                    else -> {
-                        Toast.makeText(
-                            this@MainActivity,
-                            "Error: ${error.message}",
-                            Toast.LENGTH_LONG
-                        ).show()
-                    }
-                }
-            }
+        //string last update and next update
+                    val lastUpdate = "Last update: ${rateInfo!!.last_update}"
+                    val nextUpdate = "Next update: ${rateInfo!!.next_update}"
 
-        // call api ExchangeRatesAPI + (currency 1) using the GET method
-        val builder = Uri.parse(ExchangeRatesAPI + currency1).buildUpon()
-        val url = builder.build().toString()
-        val request = StringRequest(Request.Method.GET, url, responeString, errorListener)
-        request.setRetryPolicy(
-            DefaultRetryPolicy(
-                DefaultRetryPolicy.DEFAULT_TIMEOUT_MS,
-                DefaultRetryPolicy.DEFAULT_MAX_RETRIES,
-                DefaultRetryPolicy.DEFAULT_BACKOFF_MULT
-            )
-        )
-        requestQueue.add(request)
+        //assign values into outputs
+        tvCompare?.setText(compareCurrency)
+        tvLastUpdate?.setText(lastUpdate)
+        tvNextUpdate?.setText(nextUpdate)
     }
 
     private fun getAmount(): kotlin.Double{
